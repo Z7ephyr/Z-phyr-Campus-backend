@@ -28,8 +28,9 @@ export class RefreshToken {
   @CreateDateColumn()
   created_at: Date;
 
-  // Relations
-  @ManyToOne(() => User, (user) => user.refresh_tokens)
+  @ManyToOne(() => User, (user) => user.refreshtokens, { 
+    onDelete: 'CASCADE'
+  })
   @JoinColumn({ name: 'user_id' })
   user: User;
 }

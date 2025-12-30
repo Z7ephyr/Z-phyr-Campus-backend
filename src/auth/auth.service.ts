@@ -32,67 +32,80 @@ export class AuthService {
     private readonly usersService: UsersService,
   ) {}
 
-  // ===========================
-  // LOGIN
-  // ===========================
   async login(
     loginDto: LoginDto,
     ipAddress: string,
   ): Promise<AuthResponseDto> {
-    const { student_id, password } = loginDto;
-
-    const user = await this.usersService.findByStudentId(student_id);
-
-    // Account locked check
-    if (user?.status === UserStatus.LOCKED) {
-      if (user.locked_until && new Date() < user.locked_until) {
+    const { email: identifier, password } = loginDto;
+  
+    // 1. RECHERCHE HYBRIDE : On cherche par Email OU par Student ID
+    let user = await this.usersService.findOneByEmail(identifier);
+    if (!user) {
+      user = await this.usersService.findByStudentId(identifier);
+    }
+  
+    // 2. EXISTENCE : Si l'utilisateur n'existe pas, on log l'échec et on sort
+    if (!user) {
+      await this.logLoginAttempt(identifier, ipAddress, false, undefined, 'User not found');
+      throw new UnauthorizedException('Identifiants invalides');
+    }
+  
+    // 3. GESTION DU VERROUILLAGE SÉCURITÉ (Brute force)
+    if (user.status === UserStatus.LOCKED && user.locked_until) {
+      if (new Date() < user.locked_until) {
         await this.logLoginAttempt(
-          student_id,
+          identifier,
           ipAddress,
           false,
           user.id,
-          'Account locked',
+          'Account locked (temporary)',
         );
         throw new UnauthorizedException(
-          `Account is locked until ${user.locked_until.toLocaleString()}`,
+          `Compte verrouillé temporairement. Réessayez après ${user.locked_until.toLocaleString()}`,
         );
       }
-
+      
+      // Le délai est expiré, on réinitialise le statut avant de vérifier le mot de passe
       user.status = UserStatus.ACTIVE;
       user.failed_login_attempts = 0;
       user.locked_until = null;
       await this.userRepository.save(user);
     }
-
-    // Password validation
-    if (!user || !(await bcrypt.compare(password, user.password_hash))) {
-      await this.handleFailedLogin(student_id, ipAddress, user?.id);
-      throw new UnauthorizedException('Invalid student ID or password');
-    }
-
-    // Status check
+  
+    // 4. GESTION DU STATUT ADMINISTRATIF (Suspension / Attente)
+    // On bloque ici si l'admin a mis "SUSPENDED" ou "PENDING"
     if (user.status !== UserStatus.ACTIVE) {
       await this.logLoginAttempt(
-        student_id,
+        identifier,
         ipAddress,
         false,
         user.id,
-        `Status: ${user.status}`,
+        `Access denied: status is ${user.status}`,
       );
-      throw new UnauthorizedException(`Account is ${user.status}`);
+      throw new UnauthorizedException(
+        `Accès refusé. Votre compte est actuellement ${user.status}. Veuillez contacter l'administration.`,
+      );
     }
-
-    // Reset failed attempts
+  
+    // 5. VÉRIFICATION DU MOT DE PASSE
+    if (!(await bcrypt.compare(password, user.password_hash))) {
+      await this.handleFailedLogin(identifier, ipAddress, user.id);
+      throw new UnauthorizedException('Identifiants invalides');
+    }
+  
+    // 6. SUCCÈS : Réinitialisation finale et logs
     if (user.failed_login_attempts > 0) {
       user.failed_login_attempts = 0;
+      user.locked_until = null;
       await this.userRepository.save(user);
     }
-
-    await this.logLoginAttempt(student_id, ipAddress, true, user.id);
-
+  
+    await this.logLoginAttempt(identifier, ipAddress, true, user.id);
+  
+    // 7. GÉNÉRATION DES TOKENS ET RÉPONSE
     const tokens = await this.generateTokens(user);
     const userWithProfile = await this.usersService.findByIdWithProfile(user.id);
-
+  
     return {
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
@@ -105,10 +118,6 @@ export class AuthService {
       },
     };
   }
-
-  // ===========================
-  // TOKEN GENERATION
-  // ===========================
   private async generateTokens(user: User) {
     const payload = {
       sub: user.id,
@@ -117,17 +126,13 @@ export class AuthService {
     };
 
     const access_token = this.jwtService.sign(payload, {
-      secret: this.configService.getOrThrow<string>('JWT_ACCESS_SECRET'),
-      expiresIn: Number(
-        this.configService.getOrThrow<string>('JWT_ACCESS_EXPIRATION'),
-      ),
+      secret: this.configService.get<string>('JWT_ACCESS_SECRET'),
+      expiresIn: '24h',
     });
 
     const refresh_token = this.jwtService.sign(payload, {
-      secret: this.configService.getOrThrow<string>('JWT_REFRESH_SECRET'),
-      expiresIn: Number(
-        this.configService.getOrThrow<string>('JWT_REFRESH_EXPIRATION'),
-      ),
+      secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
+      expiresIn: '7d',
     });
 
     await this.storeRefreshToken(user.id, refresh_token);
@@ -135,9 +140,6 @@ export class AuthService {
     return { access_token, refresh_token };
   }
 
-  // ===========================
-  // STORE REFRESH TOKEN
-  // ===========================
   private async storeRefreshToken(
     userId: string,
     token: string,
@@ -145,10 +147,7 @@ export class AuthService {
     const tokenHash = await bcrypt.hash(token, 10);
 
     const expiresAt = new Date();
-    expiresAt.setSeconds(
-      expiresAt.getSeconds() +
-        Number(this.configService.getOrThrow('JWT_REFRESH_EXPIRATION')),
-    );
+    expiresAt.setDate(expiresAt.getDate() + 7);
 
     const refreshToken = this.refreshTokenRepository.create({
       user_id: userId,
@@ -159,15 +158,12 @@ export class AuthService {
     await this.refreshTokenRepository.save(refreshToken);
   }
 
-  // ===========================
-  // REFRESH ACCESS TOKEN
-  // ===========================
   async refreshAccessToken(
     refreshToken: string,
   ): Promise<{ access_token: string }> {
     try {
       const payload = this.jwtService.verify(refreshToken, {
-        secret: this.configService.getOrThrow<string>('JWT_REFRESH_SECRET'),
+        secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
       });
 
       const user = await this.usersService.findById(payload.sub);
@@ -177,9 +173,13 @@ export class AuthService {
         where: { user_id: user.id, is_revoked: false },
       });
 
-      const valid = await Promise.any(
-        tokens.map((t) => bcrypt.compare(refreshToken, t.token_hash)),
-      ).catch(() => false);
+      let valid = false;
+      for (const t of tokens) {
+        if (await bcrypt.compare(refreshToken, t.token_hash)) {
+          valid = true;
+          break;
+        }
+      }
 
       if (!valid) throw new UnauthorizedException();
 
@@ -190,10 +190,8 @@ export class AuthService {
           role: user.role,
         },
         {
-          secret: this.configService.getOrThrow<string>('JWT_ACCESS_SECRET'),
-          expiresIn: Number(
-            this.configService.getOrThrow<string>('JWT_ACCESS_EXPIRATION'),
-          ),
+          secret: this.configService.get<string>('JWT_ACCESS_SECRET'),
+          expiresIn: '24h',
         },
       );
 
@@ -203,9 +201,6 @@ export class AuthService {
     }
   }
 
-  // ===========================
-  // LOGOUT
-  // ===========================
   async logout(userId: string, refreshToken: string): Promise<void> {
     const tokens = await this.refreshTokenRepository.find({
       where: { user_id: userId, is_revoked: false },
@@ -219,9 +214,6 @@ export class AuthService {
     }
   }
 
-  // ===========================
-  // FAILED LOGIN HANDLING
-  // ===========================
   private async handleFailedLogin(
     studentId: string,
     ipAddress: string,
@@ -250,9 +242,6 @@ export class AuthService {
     await this.userRepository.save(user);
   }
 
-  // ===========================
-  // LOGIN ATTEMPT LOG
-  // ===========================
   private async logLoginAttempt(
     studentId: string,
     ipAddress: string,

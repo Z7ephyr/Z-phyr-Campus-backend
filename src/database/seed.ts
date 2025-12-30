@@ -3,6 +3,7 @@ import * as bcrypt from 'bcrypt';
 import { User, UserRole, UserStatus } from '../users/entities/user.entity';
 import { UserProfile } from '../users/entities/user-profile.entity';
 import { RefreshToken } from '../auth/entities/refresh-token.entity';
+import { LoginAttempt } from '../auth/entities/login-attempt.entity';
 
 export const AppDataSource = new DataSource({
   type: 'postgres',
@@ -11,8 +12,7 @@ export const AppDataSource = new DataSource({
   username: 'postgres',
   password: '02hero',
   database: 'zephyr_campus_db',
-  entities: [__dirname + '/../**/*.entity.{ts,js}'],
-  synchronize: false, // ⚠️ never true in prod
+  entities: [User, UserProfile, RefreshToken, LoginAttempt], 
 });
 
 async function seed() {
@@ -21,7 +21,27 @@ async function seed() {
   const userRepository = AppDataSource.getRepository(User);
   const profileRepository = AppDataSource.getRepository(UserProfile);
 
-  console.log('🌱 Seeding database...');
+  console.log('🌱 Starting database seeding...');
+
+ 
+  const adminEmail = 'admin@zephyr.tn';
+  const existingAdmin = await userRepository.findOne({ where: { email: adminEmail } });
+
+  if (!existingAdmin) {
+    const adminPasswordHash = await bcrypt.hash('admin123', 10);
+    const adminUser = userRepository.create({
+      student_id: 'ADMIN001',
+      email: adminEmail,
+      password_hash: adminPasswordHash,
+      role: UserRole.ADMIN,
+      status: UserStatus.ACTIVE,
+    });
+    await userRepository.save(adminUser);
+    console.log('👑 Admin created: admin@zephyr.tn / admin123');
+  } else {
+    console.log('⏭️  Admin already exists');
+  }
+
 
   const students = [
     {
@@ -65,7 +85,7 @@ async function seed() {
     });
 
     if (existingUser) {
-      console.log(`⏭️  ${student.student_id} already exists`);
+      console.log(`⏭️  Student ${student.student_id} already exists`);
       continue;
     }
 
@@ -82,7 +102,7 @@ async function seed() {
     await userRepository.save(user);
 
     const profile = profileRepository.create({
-      user_id: user.id,
+      user: user, // Utilisation de l'objet user complet pour la relation
       full_name: student.full_name,
       cin: student.cin,
       nationality: student.nationality,
@@ -98,7 +118,7 @@ async function seed() {
     console.log(`✅ Created ${student.student_id} (${student.full_name})`);
   }
 
-  console.log('🎉 Seeding completed!');
+  console.log('🎉 Seeding completed successfully!');
   await AppDataSource.destroy();
   process.exit(0);
 }

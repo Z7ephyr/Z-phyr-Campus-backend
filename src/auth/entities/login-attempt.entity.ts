@@ -32,7 +32,9 @@ export class LoginAttempt {
   attempted_at: Date;
 
   // Relations
-  @ManyToOne(() => User, (user) => user.login_attempts, { nullable: true })
+  @ManyToOne(() => User, (user) => user.login_attempts, { 
+    onDelete: 'CASCADE' 
+  })
   @JoinColumn({ name: 'user_id' })
   user: User;
 }

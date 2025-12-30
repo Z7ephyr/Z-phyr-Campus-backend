@@ -64,12 +64,12 @@ locked_until: Date | null;
   @UpdateDateColumn()
   updated_at: Date;
 
-  // Relations
+ 
   @OneToOne(() => UserProfile, (profile) => profile.user)
   profile: UserProfile;
 
   @OneToMany(() => RefreshToken, (token) => token.user)
-  refresh_tokens: RefreshToken[];
+  refreshtokens: RefreshToken[];
 
   @OneToMany(() => LoginAttempt, (attempt) => attempt.user)
   login_attempts: LoginAttempt[];
