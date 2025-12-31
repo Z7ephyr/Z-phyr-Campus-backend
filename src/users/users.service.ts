@@ -28,9 +28,14 @@ export class UsersService {
   }
 
   async findOneByEmail(email: string): Promise<User | null> {
-    return this.userRepository.findOne({ where: { email } });
+    if (!email) return null;
+  
+    return this.userRepository.findOne({ 
+      where: { 
+        email: email.toLowerCase().trim() 
+      } 
+    });
   }
-
   async findById(id: string): Promise<User | null> {
     return this.userRepository.findOne({ where: { id } });
   }

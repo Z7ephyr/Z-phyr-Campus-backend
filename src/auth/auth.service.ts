@@ -37,20 +37,26 @@ export class AuthService {
     ipAddress: string,
   ): Promise<AuthResponseDto> {
     const { email: identifier, password } = loginDto;
-  
-    // 1. RECHERCHE HYBRIDE : On cherche par Email OU par Student ID
-    let user = await this.usersService.findOneByEmail(identifier);
-    if (!user) {
+    
+    let user: User | null = null;
+
+   
+    if (identifier.includes('@')) {
+     
+      user = await this.usersService.findOneByEmail(identifier);
+    } else {
+     
       user = await this.usersService.findByStudentId(identifier);
     }
-  
-    // 2. EXISTENCE : Si l'utilisateur n'existe pas, on log l'échec et on sort
+
+ 
     if (!user) {
       await this.logLoginAttempt(identifier, ipAddress, false, undefined, 'User not found');
+     
       throw new UnauthorizedException('Identifiants invalides');
     }
-  
-    // 3. GESTION DU VERROUILLAGE SÉCURITÉ (Brute force)
+
+   
     if (user.status === UserStatus.LOCKED && user.locked_until) {
       if (new Date() < user.locked_until) {
         await this.logLoginAttempt(
@@ -65,15 +71,14 @@ export class AuthService {
         );
       }
       
-      // Le délai est expiré, on réinitialise le statut avant de vérifier le mot de passe
+      
       user.status = UserStatus.ACTIVE;
       user.failed_login_attempts = 0;
       user.locked_until = null;
       await this.userRepository.save(user);
     }
-  
-    // 4. GESTION DU STATUT ADMINISTRATIF (Suspension / Attente)
-    // On bloque ici si l'admin a mis "SUSPENDED" ou "PENDING"
+
+   
     if (user.status !== UserStatus.ACTIVE) {
       await this.logLoginAttempt(
         identifier,
@@ -83,29 +88,30 @@ export class AuthService {
         `Access denied: status is ${user.status}`,
       );
       throw new UnauthorizedException(
-        `Accès refusé. Votre compte est actuellement ${user.status}. Veuillez contacter l'administration.`,
+        `Accès refusé. Votre compte est actuellement ${user.status}.`,
       );
     }
-  
-    // 5. VÉRIFICATION DU MOT DE PASSE
-    if (!(await bcrypt.compare(password, user.password_hash))) {
+
+    
+    const isPasswordValid = await bcrypt.compare(password, user.password_hash);
+    if (!isPasswordValid) {
       await this.handleFailedLogin(identifier, ipAddress, user.id);
       throw new UnauthorizedException('Identifiants invalides');
     }
+
   
-    // 6. SUCCÈS : Réinitialisation finale et logs
     if (user.failed_login_attempts > 0) {
       user.failed_login_attempts = 0;
       user.locked_until = null;
       await this.userRepository.save(user);
     }
-  
+
     await this.logLoginAttempt(identifier, ipAddress, true, user.id);
-  
-    // 7. GÉNÉRATION DES TOKENS ET RÉPONSE
+
+    
     const tokens = await this.generateTokens(user);
     const userWithProfile = await this.usersService.findByIdWithProfile(user.id);
-  
+
     return {
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
@@ -114,7 +120,7 @@ export class AuthService {
         student_id: user.student_id,
         email: user.email,
         role: user.role,
-        full_name: userWithProfile?.profile?.full_name ?? '',
+        full_name: userWithProfile?.profile?.full_name ?? 'Étudiant',
       },
     };
   }
